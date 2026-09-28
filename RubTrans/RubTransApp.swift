@@ -35,7 +35,7 @@ var offlineUntil = Date.distantPast
 var lastError = "нет данных"
 
 func fetch(_ url: URL, timeout: TimeInterval = 20, retries: Int = 3) async -> (Data, String)? {
-    if Date() < offlineUntil { lastError = "офлайн-режим"; return nil }
+    if Date() < offlineUntil { lastError = "сайт недоступен"; return nil }
     for attempt in 0...retries {
         var r = URLRequest(url: url)
         r.timeoutInterval = timeout
@@ -59,16 +59,20 @@ func fetch(_ url: URL, timeout: TimeInterval = 20, retries: Int = 3) async -> (D
             return nil
         } catch {
             lastError = "\(error.localizedDescription) для \(url.absoluteString)"
-            if let e = error as? URLError,
-               e.code == .notConnectedToInternet || e.code == .dataNotAllowed {
-                offlineUntil = Date().addingTimeInterval(10)
+            let connectionCodes: [URLError.Code] = [
+                .notConnectedToInternet, .dataNotAllowed, .timedOut, .cannotConnectToHost,
+                .cannotFindHost, .networkConnectionLost, .secureConnectionFailed,
+                .dnsLookupFailed, .internationalRoamingOff
+            ]
+            if let e = error as? URLError, connectionCodes.contains(e.code) {
+                if e.code == .notConnectedToInternet || e.code == .dataNotAllowed || attempt >= retries {
+                    offlineUntil = Date().addingTimeInterval(20)
+                    return nil
+                }
+            } else if attempt >= retries {
                 return nil
             }
-            if attempt < retries {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-                continue
-            }
-            return nil
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
         }
     }
     return nil
@@ -99,8 +103,11 @@ final class Handler: NSObject, WKURLSchemeHandler {
         let real = realURL(u)
         let id = ObjectIdentifier(task as AnyObject)
         Task { @MainActor in
-            var res = await fetch(real)
-            if res == nil { res = Store.load(real) }
+            let cached = Store.load(real)
+            var res = await fetch(real,
+                                  timeout: cached != nil ? 4 : 20,
+                                  retries: cached != nil ? 0 : 3)
+            if res == nil { res = cached }
             if self.stopped.remove(id) != nil { return }
             if let (d, mime) = res {
                 let body = rewrite(d, mime)
