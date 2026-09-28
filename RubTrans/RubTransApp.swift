@@ -31,21 +31,32 @@ enum Store {
 }
 
 // MARK: - Сеть
-var offlineUntil = Date.distantPast   // если сеть недоступна, не ждём таймаутов
+var offlineUntil = Date.distantPast
+var lastError = "нет данных"
 
-func fetch(_ url: URL, timeout: TimeInterval = 6) async -> (Data, String)? {
-    if Date() < offlineUntil { return nil }
+func fetch(_ url: URL, timeout: TimeInterval = 20) async -> (Data, String)? {
+    if Date() < offlineUntil { lastError = "офлайн-режим"; return nil }
     var r = URLRequest(url: url)
     r.timeoutInterval = timeout
     r.cachePolicy = .reloadIgnoringLocalCacheData
-    guard let (d, resp) = try? await URLSession.shared.data(for: r),
-          let h = resp as? HTTPURLResponse, (200..<300).contains(h.statusCode) else {
-        offlineUntil = Date().addingTimeInterval(20)
+    do {
+        let (d, resp) = try await URLSession.shared.data(for: r)
+        guard let h = resp as? HTTPURLResponse else { lastError = "нет ответа"; return nil }
+        guard (200..<300).contains(h.statusCode) else {
+            lastError = "HTTP \(h.statusCode) для \(url.absoluteString)"
+            return nil
+        }
+        let mime = h.value(forHTTPHeaderField: "Content-Type") ?? "application/octet-stream"
+        Store.save(url, d, mime)
+        return (d, mime)
+    } catch {
+        lastError = "\(error.localizedDescription) для \(url.absoluteString)"
+        if let e = error as? URLError,
+           e.code == .notConnectedToInternet || e.code == .dataNotAllowed {
+            offlineUntil = Date().addingTimeInterval(10)
+        }
         return nil
     }
-    let mime = h.value(forHTTPHeaderField: "Content-Type") ?? "application/octet-stream"
-    Store.save(url, d, mime)
-    return (d, mime)
 }
 
 func realURL(_ u: URL) -> URL {
@@ -82,8 +93,10 @@ final class Handler: NSObject, WKURLSchemeHandler {
                     headerFields: ["Content-Type": mime, "Access-Control-Allow-Origin": "*"])!
                 task.didReceive(resp); task.didReceive(body); task.didFinish()
             } else {
-                let resp = HTTPURLResponse(url: u, statusCode: 404, httpVersion: nil, headerFields: nil)!
-                task.didReceive(resp); task.didFinish()
+                let html = "<html><meta name=viewport content='width=device-width'><body style='font:16px -apple-system;padding:24px'><h3>Не удалось загрузить</h3><p>\(real.absoluteString)</p><p>\(lastError)</p></body></html>"
+                let resp = HTTPURLResponse(url: u, statusCode: 200, httpVersion: nil,
+                    headerFields: ["Content-Type": "text/html; charset=utf-8"])!
+                task.didReceive(resp); task.didReceive(Data(html.utf8)); task.didFinish()
             }
         }
     }
