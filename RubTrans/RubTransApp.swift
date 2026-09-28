@@ -184,7 +184,11 @@ struct WebContainer: UIViewRepresentable {
         func webView(_ w: WKWebView, decidePolicyFor a: WKNavigationAction,
                      decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
             if let u = a.request.url, ["http", "https"].contains(u.scheme ?? "") {
-                UIApplication.shared.open(u); decisionHandler(.cancel)
+                if a.targetFrame?.isMainFrame == false {
+                    decisionHandler(.allow)   // iframe (капча, виджеты) грузим внутри приложения
+                } else {
+                    UIApplication.shared.open(u); decisionHandler(.cancel)
+                }
             } else { decisionHandler(.allow) }
         }
     }
