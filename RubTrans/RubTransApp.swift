@@ -39,6 +39,9 @@ func fetch(_ url: URL, timeout: TimeInterval = 20) async -> (Data, String)? {
     var r = URLRequest(url: url)
     r.timeoutInterval = timeout
     r.cachePolicy = .reloadIgnoringLocalCacheData
+    r.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
+    r.setValue("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", forHTTPHeaderField: "Accept")
+    r.setValue("ru-RU,ru;q=0.9,en;q=0.8", forHTTPHeaderField: "Accept-Language")
     do {
         let (d, resp) = try await URLSession.shared.data(for: r)
         guard let h = resp as? HTTPURLResponse else { lastError = "нет ответа"; return nil }
