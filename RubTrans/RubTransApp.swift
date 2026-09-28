@@ -34,32 +34,44 @@ enum Store {
 var offlineUntil = Date.distantPast
 var lastError = "нет данных"
 
-func fetch(_ url: URL, timeout: TimeInterval = 20) async -> (Data, String)? {
+func fetch(_ url: URL, timeout: TimeInterval = 20, retries: Int = 3) async -> (Data, String)? {
     if Date() < offlineUntil { lastError = "офлайн-режим"; return nil }
-    var r = URLRequest(url: url)
-    r.timeoutInterval = timeout
-    r.cachePolicy = .reloadIgnoringLocalCacheData
-    r.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
-    r.setValue("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", forHTTPHeaderField: "Accept")
-    r.setValue("ru-RU,ru;q=0.9,en;q=0.8", forHTTPHeaderField: "Accept-Language")
-    do {
-        let (d, resp) = try await URLSession.shared.data(for: r)
-        guard let h = resp as? HTTPURLResponse else { lastError = "нет ответа"; return nil }
-        guard (200..<300).contains(h.statusCode) else {
+    for attempt in 0...retries {
+        var r = URLRequest(url: url)
+        r.timeoutInterval = timeout
+        r.cachePolicy = .reloadIgnoringLocalCacheData
+        r.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
+        r.setValue("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", forHTTPHeaderField: "Accept")
+        r.setValue("ru-RU,ru;q=0.9,en;q=0.8", forHTTPHeaderField: "Accept-Language")
+        do {
+            let (d, resp) = try await URLSession.shared.data(for: r)
+            guard let h = resp as? HTTPURLResponse else { lastError = "нет ответа"; return nil }
+            if (200..<300).contains(h.statusCode) {
+                let mime = h.value(forHTTPHeaderField: "Content-Type") ?? "application/octet-stream"
+                Store.save(url, d, mime)
+                return (d, mime)
+            }
             lastError = "HTTP \(h.statusCode) для \(url.absoluteString)"
+            if [429, 502, 503, 504].contains(h.statusCode) && attempt < retries {
+                try? await Task.sleep(nanoseconds: UInt64(attempt + 1) * 2_000_000_000)
+                continue
+            }
+            return nil
+        } catch {
+            lastError = "\(error.localizedDescription) для \(url.absoluteString)"
+            if let e = error as? URLError,
+               e.code == .notConnectedToInternet || e.code == .dataNotAllowed {
+                offlineUntil = Date().addingTimeInterval(10)
+                return nil
+            }
+            if attempt < retries {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                continue
+            }
             return nil
         }
-        let mime = h.value(forHTTPHeaderField: "Content-Type") ?? "application/octet-stream"
-        Store.save(url, d, mime)
-        return (d, mime)
-    } catch {
-        lastError = "\(error.localizedDescription) для \(url.absoluteString)"
-        if let e = error as? URLError,
-           e.code == .notConnectedToInternet || e.code == .dataNotAllowed {
-            offlineUntil = Date().addingTimeInterval(10)
-        }
-        return nil
     }
+    return nil
 }
 
 func realURL(_ u: URL) -> URL {
@@ -118,10 +130,11 @@ enum Crawler {
             pattern: #"(?:href|src)\s*=\s*["']([^"'#]+)|url\(\s*["']?([^"')]+)"#, options: [.caseInsensitive])
 
         while !queue.isEmpty && seen.count < 3000 {
-            let batch = Array(queue.prefix(6)); queue.removeFirst(batch.count)
+            let batch = Array(queue.prefix(2)); queue.removeFirst(batch.count)
+            try? await Task.sleep(nanoseconds: 800_000_000)
             await withTaskGroup(of: (URL, Data, String)?.self) { g in
                 for u in batch {
-                    g.addTask { await fetch(u, timeout: 20).map { (u, $0.0, $0.1) } }
+                    g.addTask { await fetch(u, timeout: 20, retries: 1).map { (u, $0.0, $0.1) } }
                 }
                 for await r in g {
                     guard let (base, data, mime) = r else { continue }
